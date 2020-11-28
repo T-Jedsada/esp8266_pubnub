@@ -1,61 +1,73 @@
-// PubNub example using ESP8266.
+// PubNub MQTT example using ESP8266.
 #include <ESP8266WiFi.h>
-#define PubNub_BASE_CLIENT WiFiClient
-#include <PubNub.h>
-static char ssid[] = "YOUR_NETWORK_SSID";
-static char pass[] = "YOUR_NETWORK_PASSWORD";
-const static char pubkey[]  = "YOUR_PUB_KEY_HERE";
-const static char subkey[]  = "YOUR_SUB_KEY_HERE";
-const static char channel[] = "hello_world";
-String message;
+#include <PubSubClient.h>
+// Connection info.
+const char* ssid = "YOUR_NETWORK_SSID";
+const char* password =  "YOUR_NETWORK_PASSWORD";
+const char* mqttServer = "mqtt.pndsn.com";
+const int mqttPort = 1883;
+const char* clientID = "YOUR_PUB_KEY_HERE/YOUR_SUB_KEY_HERE/CLIENT_ID";
+const char* channelName = "hello_world";
+int state = 0;
+WiFiClient MQTTclient;
+PubSubClient client(MQTTclient);
+void callback(char* topic, byte* payload, unsigned int length) {
+  String payload_buff;
+  for (int i = 0; i < length; i++) {
+    payload_buff = payload_buff + String((char)payload[i]);
+    if (payload_buff == "\"on\"") {
+      state = 1;
+      digitalWrite(LED_BUILTIN, LOW);
+    } else if (payload_buff == "\"off\"") {
+      state = 0;
+      digitalWrite(LED_BUILTIN, HIGH);
+    }
+  }
+  Serial.println(payload_buff); // Print out messages.
+}
+long lastReconnectAttempt = 0;
+long lastState = 0;
+boolean reconnect() {
+  if (client.connect(clientID)) {
+    client.subscribe(channelName); // Subscribe.
+  }
+  return client.connected();
+}
 void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
   Serial.begin(9600);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
   Serial.println("Attempting to connect...");
-  WiFi.begin(ssid, pass);
-  if (WiFi.waitForConnectResult() != WL_CONNECTED) { // Connect to WiFi.
+  WiFi.begin(ssid, password); // Connect to WiFi.
+  if (WiFi.waitForConnectResult() != WL_CONNECTED) {
     Serial.println("Couldn't connect to WiFi.");
     while (1) delay(100);
   }
-  else {
-    Serial.print("Connected to SSID: ");
-    Serial.println(ssid);
-    PubNub.begin(pubkey, subkey); // Start PubNub.
-    Serial.println("PubNub is set up.");
-  }
+  client.setServer(mqttServer, mqttPort); // Connect to PubNub.
+  client.setCallback(callback);
+  lastReconnectAttempt = 0;
 }
 void loop() {
-  { // Subscribe.
-    PubSubClient* sclient = PubNub.subscribe(channel); // Subscribe.
-    if (0 == sclient) {
-      Serial.println("Error subscribing to channel.");
-      delay(1000);
-      return;
+  if (!client.connected()) {
+    long now = millis();
+    if (now - lastReconnectAttempt > 5000) { // Try to reconnect.
+      lastReconnectAttempt = now;
+      if (reconnect()) { // Attempt to reconnect.
+        lastReconnectAttempt = 0;
+      }
     }
-    while (sclient->wait_for_data()) { // Print messages.
-      digitalWrite(LED_BUILTIN, HIGH);
-      digitalWrite(LED_BUILTIN, LOW);
-      Serial.write(sclient->read());
+  } else { // Connected.
+    Serial.println("PubNub is connected");
+    client.loop();
+    long now = millis();
+    if (now - lastState > 4000) {
+      lastState = now;
+      if (state == 1) {
+        client.publish(channelName, "{\"state\": \"on\"}");
+      } else {
+        client.publish(channelName, "{\"state\": \"off\"}");
+      }
     }
-    sclient->stop();
+    delay(1000);
   }
-  { // Publish.
-    char unknown[] = "\"unknown\"";
-    char ON[] = "\"on\"";
-    char OFF[] = "\"off\"";
-    WiFiClient* client;
-    if (digitalRead(LED_BUILTIN) == HIGH) {
-      client = PubNub.publish(channel, ON);
-    } else {
-      client = PubNub.publish(channel, OFF);
-    }
-
-    if (0 == client) {
-      Serial.println("Error publishing message.");
-      delay(1000);
-      return;
-    }
-    client->stop();
-  }
-  delay(1000);
 }
